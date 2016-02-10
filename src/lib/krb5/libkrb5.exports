@@ -145,6 +145,9 @@ k5_plugin_register_dyn
 k5_unmarshal_cred
 k5_unmarshal_princ
 k5_zapfree_pa_data
+k5_authind_decode
+k5_unwrap_cammac_svc
+k5_cammac_check_svcver
 krb524_convert_creds_kdc
 krb524_init_ets
 krb5_425_conv_principal

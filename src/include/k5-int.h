@@ -955,6 +955,15 @@ void k5_free_kkdcp_message(krb5_context context, krb5_kkdcp_message *val);
 void k5_free_cammac(krb5_context context, krb5_cammac *val);
 void k5_free_secure_cookie(krb5_context context, krb5_secure_cookie *val);
 
+krb5_error_code
+k5_cammac_check_svcver(krb5_context context, const krb5_cammac *cammac,
+                       const krb5_keyblock *server_key);
+krb5_error_code
+k5_unwrap_cammac_svc(krb5_context context, const krb5_authdata *ad,
+                     const krb5_keyblock *key, krb5_authdata ***adata_out);
+krb5_error_code
+k5_authind_decode(const krb5_authdata *ad, krb5_data ***indicators);
+
 /* #include "krb5/wordsize.h" -- comes in through base-defs.h. */
 #include "com_err.h"
 #include "k5-plugin.h"
