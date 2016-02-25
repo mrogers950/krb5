@@ -256,6 +256,7 @@ ipropx_resync(uint32_t vers, struct svc_req *rqstp)
     gss_name_t name = NULL;
     char *client_name = NULL, *service_name = NULL;
     char *whoami = "iprop_full_resync_1";
+    char *realmbuf = NULL;
 
     /*
      * vers contains the highest version number the client is
@@ -321,6 +322,13 @@ ipropx_resync(uint32_t vers, struct svc_req *rqstp)
 	goto out;
     }
 
+    if (asprintf(&realmbuf, "-r %s ", handle->params.realm) < 0) {
+        krb5_klog_syslog(LOG_ERR,
+                         _("%s: unable to construct kdb5_util realm option; "
+                           "out of memory"), whoami);
+        goto out;
+    }
+
     /*
      * Note the -i; modified version of kdb5_util dump format
      * to include sno (serial number). This argument is now
@@ -335,12 +343,12 @@ ipropx_resync(uint32_t vers, struct svc_req *rqstp)
      * and timestamp are in the ulog (then the slaves can get the
      * subsequent updates very iprop).
      */
-    if (asprintf(&ubuf, "%s dump -i%d -c %s",
-		 kdb5_util, vers, dump_file) < 0) {
-	krb5_klog_syslog(LOG_ERR,
-			 _("%s: cannot construct kdb5 util dump string too long; out of memory"),
-			 whoami);
-	goto out;
+    if (asprintf(&ubuf, "%s %sdump -i%d -c %s", kdb5_util,
+                 realmbuf ? realmbuf : "", vers, dump_file) < 0) {
+        krb5_klog_syslog(LOG_ERR,
+                         _("%s: cannot construct kdb5 util dump string too long;"
+                           "out of memory"), whoami);
+        goto out;
     }
 
     /*
@@ -430,6 +438,7 @@ out:
 	debprret(whoami, ret.ret, 0);
     free(client_name);
     free(service_name);
+    free(realmbuf);
     if (name)
 	gss_release_name(&min_stat, &name);
     free(ubuf);

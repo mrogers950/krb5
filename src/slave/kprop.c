@@ -170,38 +170,64 @@ parse_args(int argc, char **argv)
         usage();
 }
 
+/* Runs krb5_sname_to_principal with a substitute realm
+ * Duplicated in kpropd.c, sharing TBD */
+static krb5_error_code
+sn2princ_with_realm(krb5_context context, const char *hostname,
+                    const char *sname, krb5_int32 type, const char *rrealm,
+                    krb5_principal *princ_out)
+{
+    krb5_error_code ret;
+    krb5_principal princ = NULL;
+
+    *princ_out = NULL;
+
+    if (rrealm == NULL)
+        return EINVAL;
+
+    ret = krb5_sname_to_principal(context, hostname, sname, type, &princ);
+    if (ret)
+        return ret;
+
+    ret = krb5_set_principal_realm(context, princ, rrealm);
+    if (ret) {
+        krb5_free_principal(context, princ);
+        return ret;
+    }
+
+    *princ_out = princ;
+    return 0;
+}
+
 static void
 get_tickets(krb5_context context)
 {
-    char *def_realm, *server;
+    char *server;
     krb5_error_code retval;
     krb5_keytab keytab = NULL;
     krb5_principal server_princ = NULL;
 
-    /* Figure out what tickets we'll be using to send. */
-    retval = krb5_sname_to_principal(context, NULL, NULL, KRB5_NT_SRV_HST,
-                                     &my_principal);
-    if (retval) {
-        com_err(progname, errno, _("while setting client principal name"));
-        exit(1);
-    }
-    if (realm != NULL) {
-        retval = krb5_set_principal_realm(context, my_principal, realm);
-        if (retval) {
-            com_err(progname, errno,
-                    _("while setting client principal realm"));
-            exit(1);
-        }
-    } else if (krb5_is_referral_realm(krb5_princ_realm(context,
-                                                       my_principal))) {
-        /* We're going to use this as a client principal, so it can't have the
-         * referral realm.  Use the default realm instead. */
-        retval = krb5_get_default_realm(context, &def_realm);
+    if (realm == NULL) {
+        retval = krb5_get_default_realm(context, &realm);
         if (retval) {
             com_err(progname, errno, _("while getting default realm"));
             exit(1);
         }
-        retval = krb5_set_principal_realm(context, my_principal, def_realm);
+    }
+
+    /* Figure out what tickets we'll be using to send. */
+    retval = sn2princ_with_realm(context, NULL, NULL, KRB5_NT_SRV_HST, realm,
+                                 &my_principal);
+    if (retval) {
+        com_err(progname, errno, _("while setting client principal name"));
+        exit(1);
+    }
+
+    if (krb5_is_referral_realm(krb5_princ_realm(context, my_principal))) {
+        /* We're going to use this as a client principal, so it can't have the
+         * referral realm.  Use the default realm instead. */
+
+        retval = krb5_set_principal_realm(context, my_principal, realm);
         if (retval) {
             com_err(progname, errno,
                     _("while setting client principal realm"));
@@ -211,8 +237,8 @@ get_tickets(krb5_context context)
 
     /* Construct the principal name for the slave host. */
     memset(&creds, 0, sizeof(creds));
-    retval = krb5_sname_to_principal(context, slave_host, KPROP_SERVICE_NAME,
-                                     KRB5_NT_SRV_HST, &server_princ);
+    retval = sn2princ_with_realm(context, slave_host, KPROP_SERVICE_NAME,
+                                 KRB5_NT_SRV_HST, realm, &server_princ);
     if (retval) {
         com_err(progname, errno, _("while setting server principal name"));
         exit(1);

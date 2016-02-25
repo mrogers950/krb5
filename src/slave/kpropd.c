@@ -90,7 +90,6 @@ extern int daemon(int, int);
 
 #define SYSLOG_CLASS LOG_DAEMON
 
-char *def_realm = NULL;
 int runonce = 0;
 
 /*
@@ -601,6 +600,34 @@ full_resync(CLIENT *clnt)
     return (status == RPC_SUCCESS) ? &clnt_res : NULL;
 }
 
+/* Runs krb5_sname_to_principal with a substitute realm.
+ * Duplicated in kprop.c, sharing TBD */
+static krb5_error_code
+sn2princ_with_realm(krb5_context context, const char *hostname,
+                    const char *sname, krb5_int32 type, const char *rrealm,
+                    krb5_principal *princ_out)
+{
+    krb5_error_code ret;
+    krb5_principal princ = NULL;
+
+    *princ_out = NULL;
+
+    if (rrealm == NULL)
+        return EINVAL;
+
+    ret = krb5_sname_to_principal(context, hostname, sname, type, &princ);
+    if (ret)
+        return ret;
+
+    ret = krb5_set_principal_realm(context, princ, rrealm);
+    if (ret) {
+        krb5_free_principal(context, princ);
+        return ret;
+    }
+
+    *princ_out = princ;
+    return 0;
+}
 /*
  * Beg for incrementals from the KDC.
  *
@@ -631,32 +658,20 @@ do_iprop()
     if (pollin == 0)
         pollin = 10;
 
-    /* Grab the realm info and check if iprop is enabled. */
-    if (def_realm == NULL) {
-        retval = krb5_get_default_realm(kpropd_context, &def_realm);
-        if (retval) {
-            com_err(progname, retval, _("Unable to get default realm"));
-            return retval;
-        }
-    }
-
-    params.mask |= KADM5_CONFIG_REALM;
-    params.realm = def_realm;
-
     if (master_svc_princstr == NULL) {
-        retval = kadm5_get_kiprop_host_srv_name(kpropd_context, def_realm,
+        retval = kadm5_get_kiprop_host_srv_name(kpropd_context, realm,
                                                 &master_svc_princstr);
         if (retval) {
             com_err(progname, retval,
                     _("%s: unable to get kiprop host based "
                       "service name for realm %s\n"),
-                    progname, def_realm);
+                    progname, realm);
             return retval;
         }
     }
 
-    retval = krb5_sname_to_principal(kpropd_context, NULL, KIPROP_SVC_NAME,
-                                     KRB5_NT_SRV_HST, &iprop_svc_principal);
+    retval = sn2princ_with_realm(kpropd_context, NULL, KIPROP_SVC_NAME,
+                                 KRB5_NT_SRV_HST, realm, &iprop_svc_principal);
     if (retval) {
         com_err(progname, retval,
                 _("while trying to construct host service principal"));
@@ -668,9 +683,9 @@ do_iprop()
                                                 iprop_svc_principal))) {
         krb5_data *r = krb5_princ_realm(kpropd_context,
                                         iprop_svc_principal);
-        assert(def_realm != NULL);
-        r->length = strlen(def_realm);
-        r->data = strdup(def_realm);
+        assert(realm != NULL);
+        r->length = strlen(realm);
+        r->data = strdup(realm);
         if (r->data == NULL) {
             com_err(progname, retval,
                     _("while determining local service principal name"));
@@ -997,7 +1012,6 @@ error:
 done:
     free(iprop_svc_princstr);
     free(master_svc_princstr);
-    krb5_free_default_realm(kpropd_context, def_realm);
     kadm5_destroy(server_handle);
     krb5_free_context(kpropd_context);
 
@@ -1157,21 +1171,24 @@ parse_args(char **argv)
     if (!debug)
         set_com_err_hook(kpropd_com_err_proc);
 
+    if (realm == NULL) {
+        retval = krb5_get_default_realm(kpropd_context, &realm);
+        if (retval) {
+            com_err(progname, retval, _("Unable to get default realm"));
+            exit(1);
+        }
+    }
     /* Construct service name from local hostname. */
-    retval = krb5_sname_to_principal(kpropd_context, NULL, KPROP_SERVICE_NAME,
-                                     KRB5_NT_SRV_HST, &server);
+    retval = sn2princ_with_realm(kpropd_context, NULL, KPROP_SERVICE_NAME,
+                                 KRB5_NT_SRV_HST, realm, &server);
     if (retval) {
         com_err(progname, retval,
                 _("while trying to construct my service name"));
         exit(1);
     }
-    if (realm != NULL) {
-        retval = krb5_set_principal_realm(kpropd_context, server, realm);
-        if (retval) {
-            com_err(progname, errno, _("while constructing my service realm"));
-            exit(1);
-        }
-    }
+
+    params.realm = strdup(realm);
+    params.mask |= KADM5_CONFIG_REALM;
 
     /* Construct the name of the temporary file. */
     if (asprintf(&temp_file_name, "%s.temp", file) < 0) {
