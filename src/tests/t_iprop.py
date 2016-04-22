@@ -132,6 +132,35 @@ slave1 = realm.special_env('slave1', True, kdc_conf=conf_slave1)
 slave1m = realm.special_env('slave1m', True, kdc_conf=conf_slave1m)
 slave2 = realm.special_env('slave2', True, kdc_conf=conf_slave2)
 
+# A default_realm and domain_realm that do not match the KDC's realm.
+krb5_conf_slave3 = { 'libdefaults' : { 'default_realm' : 'FOO.$realm',
+                                 'domain_realm' : 'krbtest.com = FOO.$realm'}}
+conf_slave3 = {'realms': {'$realm': {'iprop_slave_poll': '600',
+                                     'iprop_logfile': '$testdir/ulog.slave3',
+                                     'iprop_port': '$port8'}},
+               'dbmodules': {'db': {'database_name': '$testdir/db.slave3'}}}
+slave3 = realm.special_env('slave3', True, krb5_conf=krb5_conf_slave3,
+                            kdc_conf=conf_slave3)
+
+# A default realm and a domain realm map that differ.
+krb5_conf_slave4 = { 'libdefaults' : { 'default_realm' : '$realm',
+                                 'domain_realm' : 'krbtest.com = BAR.$realm'}}
+conf_slave4 = {'realms': {'$realm': {'iprop_slave_poll': '600',
+                                     'iprop_logfile': '$testdir/ulog.slave4',
+                                     'iprop_port': '$port8'}},
+               'dbmodules': {'db': {'database_name': '$testdir/db.slave4'}}}
+slave4 = realm.special_env('slave4', True, krb5_conf=krb5_conf_slave4,
+                            kdc_conf=conf_slave4)
+
+# Just the default realm.
+krb5_conf_slave5 = { 'libdefaults' : { 'default_realm' : '$realm' }}
+conf_slave5 = {'realms': {'$realm': {'iprop_slave_poll': '600',
+                                     'iprop_logfile': '$testdir/ulog.slave5',
+                                     'iprop_port': '$port8'}},
+               'dbmodules': {'db': {'database_name': '$testdir/db.slave5'}}}
+slave5 = realm.special_env('slave5', True, krb5_conf=krb5_conf_slave5,
+                            kdc_conf=conf_slave5)
+
 # Define some principal names.  pr3 is long enough to cause internal
 # reallocs, but not long enough to grow the basic ulog entry size.
 pr1 = 'wakawaka@' + realm.realm
@@ -155,11 +184,14 @@ if not os.path.exists(ulog):
 kiprop_princ = 'kiprop/' + hostname
 realm.extract_keytab(kiprop_princ, realm.keytab)
 
-# Create the initial slave1 and slave2 databases.
+# Create the initial slave databases.
 dumpfile = os.path.join(realm.testdir, 'dump')
 realm.run([kdb5_util, 'dump', dumpfile])
 realm.run([kdb5_util, 'load', dumpfile], slave1)
 realm.run([kdb5_util, 'load', dumpfile], slave2)
+realm.run([kdb5_util, '-r', realm.realm, 'load', dumpfile], slave3)
+realm.run([kdb5_util, 'load', dumpfile], slave4)
+realm.run([kdb5_util, 'load', dumpfile], slave5)
 
 # Reinitialize the master ulog so we know exactly what to expect in
 # it.
@@ -201,6 +233,39 @@ slave1m['KPROP_PORT'] = slave2_kprop_port
 realm.start_server([kadmind, '-nofork', '-proponly', '-W', '-p', kdb5_util,
                     '-K', kprop, '-F', slave1_out_dump_path], 'starting...',
                    slave1m)
+
+# Test similar default_realm and domain_realm map settings (with -r realm)
+slave3_in_dump_path = os.path.join(realm.testdir, 'dump.slave3.in')
+kpropd3 = realm.start_server([kpropd, '-d', '-D', '-r', realm.realm, '-P', slave2_kprop_port,
+                              '-f', slave3_in_dump_path, '-p', kdb5_util,
+                              '-a', acl_file, '-A', hostname], 'ready', slave3)
+wait_for_prop(kpropd3, True, 1, 7)
+out = realm.run([kadminl, '-r', realm.realm, 'listprincs'], env=slave3)
+if pr1 not in out or pr2 not in out or pr3 not in out:
+    fail('slave3 does not have all principals from slave1')
+stop_daemon(kpropd3)
+
+# Test dissimilar default_realm and domain_realm map settings (no -r realm)
+slave4_in_dump_path = os.path.join(realm.testdir, 'dump.slave4.in')
+kpropd4 = realm.start_server([kpropd, '-d', '-D', '-P', slave2_kprop_port,
+                              '-f', slave4_in_dump_path, '-p', kdb5_util,
+                              '-a', acl_file, '-A', hostname], 'ready', slave4)
+wait_for_prop(kpropd4, True, 1, 7)
+out = realm.run([kadminl, 'listprincs'], env=slave4)
+if pr1 not in out or pr2 not in out or pr3 not in out:
+    fail('slave4 does not have all principals from slave1')
+stop_daemon(kpropd4)
+
+# Test just the default realm.
+slave5_in_dump_path = os.path.join(realm.testdir, 'dump.slave5.in')
+kpropd5 = realm.start_server([kpropd, '-d', '-D', '-P', slave2_kprop_port,
+                              '-f', slave5_in_dump_path, '-p', kdb5_util,
+                              '-a', acl_file, '-A', hostname], 'ready', slave5)
+wait_for_prop(kpropd5, True, 1, 7)
+out = realm.run([kadminl, 'listprincs'], env=slave5)
+if pr1 not in out or pr2 not in out or pr3 not in out:
+    fail('slave5 does not have all principals from slave1')
+stop_daemon(kpropd5)
 
 # Start kpropd for slave2.  The -A option isn't needed since we're
 # talking to the same host as master (we specify it anyway to exercise
