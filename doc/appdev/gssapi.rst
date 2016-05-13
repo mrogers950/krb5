@@ -513,6 +513,60 @@ gss_get_mic_iov_length and gss_get_mic_iov::
     if (GSS_ERROR(major))
         handle_error(major, minor);
 
+Name Attributes
+--------------
+
+The following extensions (declared in ``<gssapi/gssapi_ext.h>``) can
+be used in release 1.8 or later to examine name attributes described
+in :rfc:`6680`::
+
+    OM_uint32 gss_inquire_name(OM_uint32 minor_status,
+                               gss_name_t name,
+                               int *name_is_MN,
+                               gss_OID *MN_mech,
+                               gss_buffer_set_t *attrs);
+
+    OM_uint32 gss_get_name_attribute(OM_uint32 minor_status,
+                                     gss_name_t name,
+                                     gss_buffer_t attr,
+                                     int *authenticated,
+                                     int *complete,
+                                     gss_buffer_t value,
+                                     gss_buffer_t display_value,
+                                     int *more);
+
+
+gss_inquire_name outputs a gss_buffer_set_t of all name attributes
+associated with the given name, and indicates if the name is a MN.
+If the name is a MN then the OID is also returned in MN_mech.
+
+The C-bindings of GSS_Get_name_attribute() require one function call
+per attribute value for multi-valued name attributes.  This is done
+by using a single gss_buffer_t for each value and an input/output
+integer parameter to distinguish initial and subsequent calls and to
+indicate when all values have been obtained.
+
+The "more" input/output parameter should point to an integer variable
+whose value, on first call to gss_get_name_attribute(), MUST be -1
+and whose value upon function call return will be non-zero to
+indicate that additional values remain or zero to indicate that no
+values remain.  The caller should not modify this parameter after the
+initial call.  The status of the complete and authenticated flags
+MUST NOT change between multiple calls to iterate over values for an
+attribute.
+
+The output buffers "value" and "display_value" are de-allocated by
+the caller using gss_release_buffer().
+
+* "auth-indicator" attribute:
+
+In release 1.15 this attribute type will be included in the
+gss_inquire_name output. When a client performs pre-authentication,
+the KDC may include authentication indicator values into the
+authorization data of a ticket.  These are site-defined strings that
+are intended to convey the type or strength of pre-authentication,
+allowing an application to make additional authorization policy
+checks.
 
 .. _gss_accept_sec_context: http://tools.ietf.org/html/rfc2744.html#section-5.1
 .. _gss_acquire_cred: http://tools.ietf.org/html/rfc2744.html#section-5.2
