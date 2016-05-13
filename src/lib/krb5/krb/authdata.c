@@ -45,6 +45,7 @@ static const char *objdirs[] = {
 static krb5plugin_authdata_client_ftable_v0 *authdata_systems[] = {
     &krb5int_mspac_authdata_client_ftable,
     &krb5int_s4u2proxy_authdata_client_ftable,
+    &k5_authind_ad_client_ftable,
     NULL
 };
 
@@ -536,6 +537,85 @@ k5_get_kdc_issued_authdata(krb5_context kcontext,
     return code;
 }
 
+static krb5_error_code
+k5_extract_indicators(krb5_context kcontext, krb5_authdata **cammacs,
+                      const krb5_keyblock *key, krb5_authdata ***ind_out)
+{
+    krb5_error_code ret;
+    krb5_authdata **inds = NULL;
+    krb5_authdata **tmp_inds = NULL;
+    int i;
+
+    *ind_out = NULL;
+
+    /* Decode and verify each CAMMAC, collecting the auth indicators.
+     * Ignore ones that failed verification */
+    for (i = 0; cammacs != NULL && cammacs[i] != NULL; i++) {
+        ret = k5_unwrap_cammac_svc(kcontext, cammacs[i], key, &tmp_inds);
+        if (ret != 0) {
+            ret = 0;
+            continue;
+        }
+
+        ret = krb5_merge_authdata(kcontext, inds, tmp_inds, &inds);
+        if (ret != 0)
+            goto cleanup;
+
+        krb5_free_authdata(kcontext, tmp_inds);
+        tmp_inds = NULL;
+    }
+
+    *ind_out = inds;
+    inds = NULL;
+
+cleanup:
+    krb5_free_authdata(kcontext, tmp_inds);
+    krb5_free_authdata(kcontext, inds);
+    return ret;
+}
+
+static krb5_error_code
+k5_get_cammac_authdata(krb5_context kcontext, const krb5_ap_req *ap_req,
+                       krb5_authdata ***cammac_out)
+{
+    krb5_error_code ret;
+    krb5_authdata **authdata;
+    krb5_authdata **ticket_authdata;
+
+    *cammac_out = NULL;
+    ticket_authdata = ap_req->ticket->enc_part2->authorization_data;
+
+    ret = krb5_find_authdata(kcontext, ticket_authdata, NULL,
+                             KRB5_AUTHDATA_CAMMAC, &authdata);
+
+    *cammac_out = authdata;
+
+    return ret;
+}
+
+static krb5_error_code
+k5_get_indicator_authdata(krb5_context kcontext, const krb5_ap_req *ap_req,
+                          const krb5_keyblock *key, krb5_authdata ***authinds)
+{
+    krb5_error_code ret = 0;
+    krb5_authdata **cammacs;
+    krb5_authdata **ais;
+
+    *authinds = NULL;
+
+    ret = k5_get_cammac_authdata(kcontext, ap_req, &cammacs);
+    if (ret != 0 || cammacs == NULL)
+        return ret;
+
+    ret = k5_extract_indicators(kcontext, cammacs, key, &ais);
+    if (ret == 0)
+        *authinds = ais;
+
+    krb5_free_authdata(kcontext, cammacs);
+
+    return ret;
+}
+
 krb5_error_code
 krb5int_authdata_verify(krb5_context kcontext,
                         krb5_authdata_context context,
@@ -550,11 +630,16 @@ krb5int_authdata_verify(krb5_context kcontext,
     krb5_authdata **ticket_authdata;
     krb5_principal kdc_issuer = NULL;
     krb5_authdata **kdc_issued_authdata = NULL;
+    krb5_authdata **authinds = NULL;
 
     authen_authdata = (*auth_context)->authentp->authorization_data;
     ticket_authdata = ap_req->ticket->enc_part2->authorization_data;
     k5_get_kdc_issued_authdata(kcontext, ap_req,
                                &kdc_issuer, &kdc_issued_authdata);
+
+    code = k5_get_indicator_authdata(kcontext, ap_req, key, &authinds);
+    if (code)
+        goto cleanup;
 
     for (i = 0; i < context->n_modules; i++) {
         struct _krb5_authdata_context_module *module = &context->modules[i];
@@ -576,6 +661,9 @@ krb5int_authdata_verify(krb5_context kcontext,
 
             kdc_issued_flag = TRUE;
         }
+
+        if (authinds != NULL && module->ad_type == KRB5_AUTHDATA_AUTH_INDICATOR)
+            authdata = authinds;
 
         if (authdata == NULL) {
             krb5_boolean ticket_usage = FALSE;
@@ -628,6 +716,7 @@ krb5int_authdata_verify(krb5_context kcontext,
             break;
     }
 
+cleanup:
     krb5_free_principal(kcontext, kdc_issuer);
     krb5_free_authdata(kcontext, kdc_issued_authdata);
 
