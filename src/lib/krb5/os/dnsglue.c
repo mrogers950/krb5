@@ -429,4 +429,118 @@ errout:
     return retval;
 }
 
+krb5_error_code
+k5_parse_txt_fields(const char *str, struct txt_dns_entry **entry)
+{
+    krb5_error_code ret;
+    *entry = NULL;
+    char *p, *s;
+    int i;
+
+    p = strtok_r(str, ":", &ps);
+    while (p != NULL) {
+        switch(part) {
+        case TXT_FIELD_PRIO:
+            s = p;
+            while (*s++ != '\0') {
+                if (!isdigit(*s))
+                    break;
+            }
+            i = atoi(p);
+            if (i < 0 || i > 65535)
+                break;
+            ent.priority = i;
+            break;
+        case TXT_FIELD_WEIGHT:
+            s = p;
+            while (*s++ != '\0') {
+                if (!isdigit(*s))
+                    break;
+            }
+            i = atoi(p);
+            if (i < 0 || i > 65535)
+                break;
+            ent.weight = i;
+            break;
+        }
+
+    }
+
+}
+krb5_error_code
+k5_make_txt_query_realm(cont krb5_data *realm, const char *service,
+                        k5_transport transport, struct txt_dns_entry **answers)
+{
+    krb5_error_code ret;
+    char host[MAXDNAME];
+    char *p = NULL;
+    struct txt_dns_entry *entry = NULL, *head = NULL, *ep = NULL;
+
+    *answers = NULL;
+
+    if (memchr(realm->data, 0, realm->length))
+        return 0;
+    k5_buf_init_fixed(&buf, host, sizeof(host));
+    k5_buf_add_fmt(&buf, "%s.", service);
+    k5_buf_add_len(&buf, realm->data, realm->length);
+
+    /* Realm names don't (normally) end with ".", but if the query
+       doesn't end with "." and doesn't get an answer as is, the
+       resolv code will try appending the local domain.  Since the
+       realm names are absolutes, let's stop that.
+
+       But only if a name has been specified.  If we are performing
+       a search on the prefix alone then the intention is to allow
+       the local domain or domain search lists to be expanded.  */
+
+    if (buf.len > 0 && host[buf.len - 1] != '.')
+        k5_buf_add(&buf, ".");
+
+    if (k5_buf_status(&buf) != 0)
+        return 0;
+
+    fprintf(stderr, "sending TXT SRV query for %s\n", host);
+
+    ret = krb5int_dns_init(&ds, host, C_IN, T_TXT);
+    if (ret < 0)
+        goto cleanup;
+
+    for (;;) {
+        ret = krb5int_dns_nextans(ds, &p, &rdlen);
+        if (ret < 0 || base == NULL)
+            goto cleanup;
+
+        ret = k5_parse_txt_fields(p, &entry);
+        if (ret)
+            goto cleanup;
+
+        if (entry == NULL || (entry->transport != transport))
+            continue;
+
+        if (head == NULL || head->priority > entry->priority) {
+            entry->next = head;
+            head = entry;
+        } else {
+            for (ep = head; ep != NULL; ep = ep->next) {
+                if ((ep->next &&
+                     ep->next->priority > entry->priority) ||
+                    ep->next == NULL) {
+                    entry->next = ep->next;
+                    ep->next = entry;
+                    break;
+                }
+            }
+        }
+    }
+
+cleanup:
+    if (ds != NULL) {
+        krb5int_dns_fini(ds);
+        ds = NULL;
+    }
+
+    *answers = head;
+    return ret;
+}
+
 #endif /* KRB5_DNS_LOOKUP */

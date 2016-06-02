@@ -512,6 +512,79 @@ prof_locate_server(krb5_context context, const krb5_data *realm,
 }
 
 #ifdef KRB5_DNS_LOOKUP
+
+static krb5_error_code
+locate_txt_dns(const krb5_data *realm, const char *service,
+               struct serverlist *serverlist, k5_transport transport,
+               krb5_bool master_only)
+{
+    struct txt_dns_entry *head = NULL, *entry = NULL;
+
+    ret = k5_make_txt_query_realm(realm, service, transport, &head);
+    if (ret || head == NULL)
+        return 0;
+
+    /* XXX Do we indicate no support with a "." record? */
+#if 0
+    if (head->next == NULL && head->host[0] == '\0') {
+        code = KRB5_ERR_NO_SERVICE;
+        goto cleanup;
+    }
+#endif
+    for (entry = head; entry != NULL; entry = entry->next) {
+        if (!entry->is_master && master_only)
+            continue;
+
+        if (entry->addr)
+            /* XXX review options */
+            ret = add_addr_to_list(serverlist, entry->transport, entry->family,
+                                   entry->addrlen, entry->addr);
+        else
+            /* XXX review options */
+            ret = add_host_to_list(serverlist, entry->host, htons(entry->port),
+                                   entry->transport, entry->family, entry->uri);
+
+        if (ret)
+            goto cleanup;
+    }
+
+cleanup:
+    k5_free_txt_dns_data(head);
+    return ret;
+}
+
+/* KDC Discovery method */
+static krb5_error_code
+dns_locate_server_txt(krb5_context context, const krb5_realm *realm,
+                      enum locate_service_type svc,
+                      struct serverlist *serverlist, k5_transport transport)
+{
+    char *svcname = NULL;
+    krb5_error_code ret = 0;
+
+    if (!_krb5_use_dns_kdc(context))
+        return 0;
+
+    switch (svc) {
+    case locate_service_kdc:
+    case locate_service_master_kdc:
+        svcname = "_krb5kdc";
+        break;
+    case locate_service_kadmin:
+        svcname = "_kerberos-adm";
+        break;
+    case locate_service_kpasswd:
+        svcname = "_kpasswd";
+        break;
+    default:
+        return 0;
+    }
+
+    ret = locate_txt_dns(realm, svcname, serverlist, transport,
+                         (svc == locate_service_master_kdc) ? TRUE : FALSE);
+    return ret;
+}
+
 static krb5_error_code
 dns_locate_server(krb5_context context, const krb5_data *realm,
                   struct serverlist *serverlist, enum locate_service_type svc,
@@ -587,6 +660,8 @@ locate_server(krb5_context context, const krb5_data *realm,
         goto done;
 
 #ifdef KRB5_DNS_LOOKUP
+    if (list.nservers == 0)
+        ret = dns_locate_server_txt(context, realm, &list, svc, transport);
     if (list.nservers == 0)
         ret = dns_locate_server(context, realm, &list, svc, transport);
 #endif
