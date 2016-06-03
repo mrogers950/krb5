@@ -429,44 +429,108 @@ errout:
     return retval;
 }
 
-krb5_error_code
-k5_parse_txt_fields(const char *str, struct txt_dns_entry **entry)
+void
+k5_free_txt_dns_entry(struct txt_dns_entry *entry)
 {
-    krb5_error_code ret;
-    *entry = NULL;
-    char *p, *s;
-    int i;
+    struct txt_dns_entry *next;
 
-    p = strtok_r(str, ":", &ps);
+    while (entry != NULL) {
+        next = entry->next;
+        free(entry->host);
+        free(entry);
+        entry = next;
+    }
+}
+enum txt_field {
+    TXT_FIELD_PRIO = 0,
+    TXT_FIELD_WEIGHT,
+    TXT_FIELD_FLAGS,
+    TXT_FIELD_TRANS,
+    TXT_FIELD_HOST
+};
+
+krb5_error_code
+k5_parse_txt_fields(char *str, struct txt_dns_entry **entry_out)
+{
+    krb5_error_code ret = 0;
+    char *p, *save, *s;
+    char *hostp = NULL;
+    enum txt_field field = TXT_FIELD_PRIO;
+    int i;
+    struct txt_dns_entry *entry;
+
+    *entry_out = NULL;
+
+    entry = k5alloc(sizeof(*entry), &ret);
+    if (ret || entry == NULL)
+        return errno;
+
+    p = strtok_r(str, ":", &save);
     while (p != NULL) {
-        switch(part) {
+        switch (field) {
         case TXT_FIELD_PRIO:
             s = p;
-            while (*s++ != '\0') {
-                if (!isdigit(*s))
-                    break;
+            while (*s != '\0') {
+                if (!isdigit(*s++))
+                    goto finish;
             }
             i = atoi(p);
             if (i < 0 || i > 65535)
-                break;
-            ent.priority = i;
+                goto finish;
+            entry->priority = i;
             break;
         case TXT_FIELD_WEIGHT:
             s = p;
-            while (*s++ != '\0') {
-                if (!isdigit(*s))
-                    break;
+            while (*s != '\0') {
+                if (!isdigit(*s++))
+                    goto finish;
             }
             i = atoi(p);
             if (i < 0 || i > 65535)
-                break;
-            ent.weight = i;
+                goto finish;
+            entry->weight = i;
+            /* Check for an empty flags field, which strtok_r would bypass */
+            if (*save != '\0' && *save == ':')
+                field++;
+            break;
+        case TXT_FIELD_FLAGS:
+            if (strcasecmp(p, "M") == '\0')
+                entry->is_master = TRUE;
+            break;
+        case TXT_FIELD_TRANS:
+            if (strcasecmp(p, "tcp") == 0)
+                entry->transport = TCP;
+            else if (strcasecmp(p, "udp") == 0)
+                entry->transport = UDP;
+            else if (strcasecmp(p, "kkdcp") == 0)
+                entry->transport = MSKKDCP;
+            else
+                goto finish;
+
+            break;
+        default:
             break;
         }
-
+        if (++field == TXT_FIELD_HOST) {
+            entry->host = strdup(save);
+            if (entry->host == NULL)
+                ret = errno;
+            goto finish;
+        } else {
+            p = strtok_r(NULL, ":", &save);
+        }
     }
 
+finish:
+    if (!ret && entry->host != NULL) {
+        *entry_out = ent;
+        ent = NULL;
+    }
+
+    k5_free_txt_dns_entry(ent);
+    return ret;
 }
+
 krb5_error_code
 k5_make_txt_query_realm(cont krb5_data *realm, const char *service,
                         k5_transport transport, struct txt_dns_entry **answers)

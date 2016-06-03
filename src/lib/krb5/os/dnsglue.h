@@ -163,6 +163,21 @@ struct srv_dns_entry {
     char *host;
 };
 
+struct txt_dns_entry {
+    struct txt_dns_entry *next;
+    char *host;
+    int priority;
+    int weight;
+    k5_transport transport;
+    krb5_boolean is_master;
+};
+
+krb5_error_code
+k5_make_txt_query_realm(cont krb5_data *realm, const char *service,
+                        k5_transport transport, struct txt_dns_entry **answers);
+void
+k5_free_txt_dns_data(struct txt_dns_entry *entry);
+
 krb5_error_code krb5int_make_srv_query_realm(const krb5_data *realm,
                                              const char *service,
                                              const char *protocol,
