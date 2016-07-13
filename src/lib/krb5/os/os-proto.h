@@ -58,6 +58,7 @@ struct server_entry {
     k5_transport transport;     /* May be 0 for UDP/TCP if hostname set */
     char *uri_path;             /* Used only if transport is HTTPS */
     int family;                 /* May be 0 (aka AF_UNSPEC) if hostname set */
+    int master;                 /* Set to true/false by URI RR. -1 when unset. */
     size_t addrlen;
     struct sockaddr_storage addr;
 };
