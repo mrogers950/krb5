@@ -1135,6 +1135,20 @@ fi
 AC_SUBST(HAVE_CMOCKA)
 AC_SUBST(CMOCKA_LIBS)
 
+RESOLV_WRAP_SO=
+HAVE_RESOLV_WRAPPER=0
+AC_ARG_WITH([resolv-wrapper],
+AC_HELP_STRING([--with-resolv-wrapper=PATH], [path to resolv_wrapper.so to test DNS URI discovery]),
+[RESOLV_WRAP_SO=$withval
+AC_MSG_NOTICE(resolv_wrapper path is '$withval')
+], [])
+if test "$RESOLV_WRAP_SO" != ""; then
+    AC_MSG_NOTICE(using resolv wrapper)
+    HAVE_RESOLV_WRAPPER=1
+fi
+AC_SUBST(HAVE_RESOLV_WRAPPER)
+AC_SUBST(RESOLV_WRAP_SO)
+
 # for plugins/kdb/db2
 
 # AIX is unusual in that it wants all symbols resolved at link time
