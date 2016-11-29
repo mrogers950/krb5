@@ -35,6 +35,7 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <arpa/inet.h>
+#include "k5-int.h"
 
 static krb5_error_code pkinit_init_pkinit_oids(pkinit_plg_crypto_context );
 static void pkinit_fini_pkinit_oids(pkinit_plg_crypto_context );
@@ -2270,6 +2271,85 @@ crypto_retrieve_signer_identity(krb5_context context,
     if (*identity == NULL)
         return ENOENT;
     return 0;
+}
+
+static krb5_error_code
+crypto_decode_X509(krb5_context context, krb5_data der_cert, X509 **cert_out)
+{
+    X509 *cert;
+    unsigned char *p;
+    int len;
+
+    if (cert_out != NULL)
+        *cert_out = NULL;
+
+    /* Set up buf and len from der cert */
+    p = (unsigned char *)der_cert.data;
+    len = der_cert.length;
+    cert = d2i_X509(NULL, (const unsigned char **)&p, len);
+    if (cert == NULL) {
+        return EINVAL;
+    }
+    *cert_out = cert;
+
+    return 0;
+}
+
+krb5_error_code
+crypto_decode_der_cert(krb5_context context, krb5_data der_cert,
+                       pkinit_req_crypto_context reqctx)
+{
+    krb5_error_code retval;
+    X509 *c;
+
+    retval = crypto_decode_X509(context, der_cert, &c);
+    if (retval)
+        goto cleanup;
+
+    reqctx->received_cert = c;
+cleanup:
+    return retval;
+}
+
+krb5_error_code
+crypto_encode_der_cert(krb5_context context, pkinit_req_crypto_context reqctx,
+                       krb5_data *der_cert)
+{
+    krb5_error_code retval = 0;
+    int len;
+    unsigned char *buf, *p;
+
+    if (reqctx->received_cert == NULL) {
+        pkiDebug("%s: No certificate!\n", __FUNCTION__);
+        return EINVAL;
+    }
+
+    len = i2d_X509(reqctx->received_cert, NULL);
+    buf = OPENSSL_malloc(len);
+    if (buf == NULL) {
+       pkiDebug("%s: malloc error\n", __FUNCTION__);
+       return ENOMEM;
+    }
+    p = buf;
+
+    len = i2d_X509(reqctx->received_cert, &p);
+    if (len <= 0) {
+        pkiDebug("%s: encoding error!\n", __FUNCTION__);
+        retval = EINVAL;
+        goto cleanup;
+    }
+
+    p = k5memdup(buf, len, &retval);
+    if (p == NULL) {
+       pkiDebug("%s: malloc error\n", __FUNCTION__);
+       retval = ENOMEM;
+       goto cleanup;
+    }
+
+    *der_cert = make_data(p, len);
+cleanup:
+    OPENSSL_free(p);
+    return retval;
 }
 
 krb5_error_code

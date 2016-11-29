@@ -31,6 +31,28 @@
 
 #include <k5-int.h>
 #include "pkinit.h"
+#include "krb5/certauth_plugin.h"
+
+/* Crypto contexts seperate from KDC contexts, for SAN/EKU checks. */
+struct krb5_certauth_moddata_st {
+    pkinit_req_crypto_context *reqctx;
+    pkinit_plg_crypto_context *plgctx;
+};
+
+typedef struct certauth_module_handle_st {
+    struct krb5_certauth_vtable_st vt;
+    krb5_certauth_moddata moddata;
+} *certauth_module_handle;
+
+static certauth_module_handle *certauth_handles = NULL;
+
+static krb5_error_code
+load_certauth_plugins(krb5_context context);
+
+static krb5_error_code
+pkinit_server_verify_cert_exts(krb5_context context, pkinit_kdc_context plgctx,
+                               pkinit_kdc_req_context reqctx,
+                               krb5_principal client);
 
 static krb5_error_code
 pkinit_init_kdc_req_context(krb5_context, pkinit_kdc_req_context *blob);
@@ -386,7 +408,12 @@ pkinit_server_verify_padata(krb5_context context,
         goto cleanup;
     }
     if (is_signed) {
+        retval = pkinit_server_verify_cert_exts(context, plgctx, reqctx,
+                                                request->client);
+        if (retval)
+            goto cleanup;
 
+#if 0
         retval = verify_client_san(context, plgctx, reqctx, request->client,
                                    &valid_san);
         if (retval)
@@ -407,6 +434,7 @@ pkinit_server_verify_padata(krb5_context context,
             retval = KRB5KDC_ERR_INCONSISTENT_KEY_PURPOSE;
             goto cleanup;
         }
+#endif
     } else { /* !is_signed */
         if (!krb5_principal_compare(context, request->client,
                                     krb5_anonymous_principal())) {
@@ -1366,6 +1394,10 @@ pkinit_server_plugin_init(krb5_context context,
         goto errout;
     }
 
+    retval = load_certauth_plugins(context);
+    if (retval)
+        goto errout;
+
     *moddata_out = (krb5_kdcpreauth_moddata)realm_contexts;
     retval = 0;
     pkiDebug("%s: returning context at %p\n", __FUNCTION__, realm_contexts);
@@ -1485,5 +1517,203 @@ kdcpreauth_pkinit_initvt(krb5_context context, int maj_ver, int min_ver,
     vt->edata = pkinit_server_get_edata;
     vt->verify = pkinit_server_verify_padata;
     vt->return_padata = pkinit_server_return_padata;
+    return 0;
+}
+
+/* On the chopping block. Needs rebase to new san verify behav*/
+static krb5_error_code
+pkinit_server_verify_cert_exts(krb5_context context, pkinit_kdc_context plgctx,
+                               pkinit_kdc_req_context reqctx,
+                               krb5_principal client)
+{
+    krb5_error_code retval;
+    certauth_module_handle cactx;
+    retval = pkinit_find_certauth_ctx(context, plgctx, &cactx);
+    if (retval)
+        goto cleanup;
+
+    retval = crypto_get_der_X509(context, reqctx, &der_cert);
+    if (retval)
+        goto cleanup;
+
+    for (modnum = 0; modules[modnum]; modnum++) {
+        vt = get_vtable(&modules[modnum]);
+        if (vt == NULL)
+            break;
+
+        vt->authorize(context, der_cert.data, der_cert.length, NULL, client,
+                NULL, &status);
+        if (status == OK) {
+
+        } else if (status == PASS) {
+
+        } else {
+
+        }
+    }
+    // cont
+
+cleanup:
+    return retval;
+}
+
+static krb5_error_code
+load_certauth_plugins(krb5_context context)
+{
+    krb5_error_code retval;
+    krb5_plugin_initvt_fn *plugins = NULL, *pl;
+    struct krb5_certauth_vtable_st *vtables = NULL;
+    size_t count, n_tables;
+
+    /* Register the builtin module. */
+    retval = k5_plugin_register(context, PLUGIN_INTERFACE_CERTAUTH, "pkinitsrv",
+                                certauth_pkinitsrv_initvt);
+    if (retval)
+        goto cleanup;
+
+    retval = k5_plugin_load_all(context, PLUGIN_INTERFACE_CERTAUTH, &plugins);
+    if (retval)
+        goto cleanup;
+
+    /* Allocate vtables and initialize modules. */
+    for (count = 0; plugins[count]; count++);
+    vtables = calloc(count + 1, sizeof(*vtables));
+    if (vtables == NULL) {
+        retval = ENOMEM;
+        goto cleanup;
+    }
+    for (pl = plugins, n_tables = 0; *pl != NULL; pl++) {
+        if ((*pl)(context, 1, 0, (krb5_plugin_vtable)&vtables[n_tables]) == 0)
+            n_tables++;
+    }
+
+    /* Allocate handles. */
+    certauth_handles = calloc(n_tables + 1, sizeof(*certauth_handles));
+    if (certauth_handles == NULL) {
+        retval = ENOMEM;
+        goto cleanup;
+    }
+    for (i = 0; i < n_tables; i++) {
+        certauth_handles[i] = calloc(1, sizeof(certauth_module_handle));
+        if (certauth_handles[i] == NULL) {
+            retval = ENOMEM;
+            goto cleanup;
+        }
+        certauth_handles[i]->vt = vtables[i];
+        certauth_handles[i]->moddata = NULL;
+    }
+
+cleanup:
+    /* if (retval)
+     *    free_vtables
+     *    free_certauth_handles
+     */
+    return retval;
+}
+
+/* certauth module for server PKINIT. */
+static krb5_error_code
+certauth_init(krb5_certauth_moddata *moddata_out)
+{
+    krb5_certauth_moddata mod;
+    pkinit_req_crypto_context *reqctx;
+    pkinit_plg_crypto_context *plgctx;
+    krb5_error_code retval;
+
+    *moddata_out = NULL;
+
+    mod = calloc(1, sizeof(krb5_certauth_moddata));
+    if (mod == NULL) {
+        retval = ENOMEM;
+        goto cleanup;
+    }
+    retval = pkinit_init_req_crypto(&reqctx);
+    if (retval)
+        goto cleanup;
+
+    retval = pkinit_init_plg_crypto(&plgctx);
+    if (retval)
+        goto cleanup;
+
+    mod->reqctx = reqctx;
+    mod->plgctx = plgctx;
+    *moddata_out = mod;
+
+cleanup:
+    return retval;
+}
+
+static krb5_error_code
+certauth_fini(krb5_certauth_moddata moddata)
+{
+    if (moddata == NULL)
+        return 0;
+
+    pkinit_fini_req_crypto(moddata->reqctx);
+    pkinit_fini_plg_crypto(moddata->plgctx);
+    free(moddata);
+    return 0;
+}
+
+static krb5_error_code
+certauth_authorize(krb5_context context, krb5_certauth_moddata moddata,
+                   krb5_data cert, void *db_entry, krb5_principal princ,
+                   char **authinds_out, int *status)
+{
+    krb5_error_code retval;
+    pkinit_plg_crypto_context *plgctx = moddata->plgctx;
+    pkinit_req_crypto_context *reqctx = moddata->reqctx;
+    int valid_san, valid_eku;
+
+    if (authinds_out != NULL)
+        *authinds_out = NULL;
+
+    *status = 0;
+    /* Decode cert into reqctx. */
+    retval = crypto_decode_der_cert(context, cert, reqctx);
+    if (retval) // fix
+        goto cleanup;
+
+    /* Verify the client SAN. */
+    retval = verify_client_san(context, plgctx, reqctx, princ, &valid_san);
+    if (retval) // fix
+        goto cleanup;
+
+    if (!valid_san) {
+        pkiDebug("%s: did not find an acceptable SAN in user "
+                 "certificate\n", __FUNCTION__);
+        retval = KRB5KDC_ERR_CLIENT_NAME_MISMATCH;
+        goto cleanup;
+    }
+    /* Verify the client EKU. */
+    retval = verify_client_eku(context, plgctx, reqctx, &valid_eku);
+    if (retval) //fix
+        goto cleanup;
+
+    if (!valid_eku) {
+        pkiDebug("%s: did not find an acceptable EKU in user "
+                 "certificate\n", __FUNCTION__);
+        retval = KRB5KDC_ERR_INCONSISTENT_KEY_PURPOSE;
+        goto cleanup;
+    }
+
+    *status = 1;
+cleanup:
+    return retval;
+}
+
+krb5_error_code
+certauth_pkinitsrv_initvt(krb5_context context, int maj_ver, int min_ver,
+                       krb5_plugin_vtable vtable)
+{
+    krb5_certauth_vtable vt;
+
+    if (maj_ver != 1)
+        return KRB5_PLUGIN_VER_NOTSUPP;
+    vt = (krb5_certauth_vtable)vtable;
+    vt->name = "pkinitsrv";
+    vt->authorize = certauth_authorize;
+    vt->init = certauth_init;
+    vt->fini = certauth_fini;
     return 0;
 }
