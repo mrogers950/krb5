@@ -31,6 +31,39 @@
 
 #include <k5-int.h>
 #include "pkinit.h"
+#include "krb5/certauth_plugin.h"
+
+/* cb and rock are aliases. */
+struct certauth_opts {
+    krb5_kdcpreauth_callbacks cb;
+    krb5_kdcpreauth_rock rock;
+    krb5_boolean allow_upn;
+    krb5_boolean require_eku;
+    krb5_boolean accept_secondary_eku;
+};
+
+struct krb5_certauth_moddata_st {
+    pkinit_req_crypto_context reqctx;
+    pkinit_plg_crypto_context plgctx;
+    struct certauth_opts opts;
+};
+
+typedef struct certauth_module_handle_st {
+    struct krb5_certauth_vtable_st vt;
+    krb5_certauth_moddata moddata;
+} certauth_handle;
+
+static certauth_handle *certauth_modules;
+static size_t n_certauth_modules;
+
+static krb5_error_code
+load_certauth_plugins(krb5_context context);
+
+static krb5_error_code
+server_authorize_cert(krb5_context context, pkinit_kdc_context plgctx,
+                      pkinit_kdc_req_context reqctx,
+                      krb5_kdcpreauth_callbacks cb, krb5_kdcpreauth_rock rock,
+                      krb5_principal client);
 
 static krb5_error_code
 pkinit_init_kdc_req_context(krb5_context, pkinit_kdc_req_context *blob);
@@ -119,11 +152,12 @@ pkinit_server_get_edata(krb5_context context,
 
 static krb5_error_code
 verify_client_san(krb5_context context,
-                  pkinit_kdc_context plgctx,
-                  pkinit_kdc_req_context reqctx,
+                  pkinit_plg_crypto_context plgctx,
+                  pkinit_req_crypto_context reqctx,
                   krb5_kdcpreauth_callbacks cb,
                   krb5_kdcpreauth_rock rock,
                   krb5_principal client,
+                  krb5_boolean allow_upn,
                   int *valid_san)
 {
     krb5_error_code retval;
@@ -134,10 +168,8 @@ verify_client_san(krb5_context context,
     char *client_string = NULL, *san_string;
 #endif
 
-    retval = crypto_retrieve_cert_sans(context, plgctx->cryptoctx,
-                                       reqctx->cryptoctx, plgctx->idctx,
-                                       &princs,
-                                       plgctx->opts->allow_upn ? &upns : NULL,
+    retval = crypto_retrieve_cert_sans(context, plgctx, reqctx, NULL,
+                                       &princs, allow_upn ? &upns : NULL,
                                        NULL);
     if (retval) {
         pkiDebug("%s: error from retrieve_certificate_sans()\n", __FUNCTION__);
@@ -241,25 +273,25 @@ out:
 
 static krb5_error_code
 verify_client_eku(krb5_context context,
-                  pkinit_kdc_context plgctx,
-                  pkinit_kdc_req_context reqctx,
+                  pkinit_plg_crypto_context plgctx,
+                  pkinit_req_crypto_context reqctx,
+                  krb5_boolean require_eku,
+                  krb5_boolean accept_secondary_eku,
                   int *eku_accepted)
 {
     krb5_error_code retval;
 
     *eku_accepted = 0;
 
-    if (plgctx->opts->require_eku == 0) {
+    if (require_eku == 0) {
         pkiDebug("%s: configuration requests no EKU checking\n", __FUNCTION__);
         *eku_accepted = 1;
         retval = 0;
         goto out;
     }
 
-    retval = crypto_check_cert_eku(context, plgctx->cryptoctx,
-                                   reqctx->cryptoctx, plgctx->idctx,
-                                   0, /* kdc cert */
-                                   plgctx->opts->accept_secondary_eku,
+    retval = crypto_check_cert_eku(context, plgctx, reqctx, NULL, 0,
+                                   accept_secondary_eku,
                                    eku_accepted);
     if (retval) {
         pkiDebug("%s: Error from crypto_check_cert_eku %d (%s)\n",
@@ -295,7 +327,6 @@ pkinit_server_verify_padata(krb5_context context,
     pkinit_kdc_req_context reqctx = NULL;
     krb5_checksum cksum = {0, 0, 0, NULL};
     krb5_data *der_req = NULL;
-    int valid_eku = 0, valid_san = 0;
     krb5_data k5data;
     int is_signed = 1;
     krb5_pa_data **e_data = NULL;
@@ -389,26 +420,10 @@ pkinit_server_verify_padata(krb5_context context,
     }
     if (is_signed) {
 
-        retval = verify_client_san(context, plgctx, reqctx, cb, rock,
-                                   request->client, &valid_san);
+        retval = server_authorize_cert(context, plgctx, reqctx, cb, rock,
+                                       request->client);
         if (retval)
             goto cleanup;
-        if (!valid_san) {
-            pkiDebug("%s: did not find an acceptable SAN in user "
-                     "certificate\n", __FUNCTION__);
-            retval = KRB5KDC_ERR_CLIENT_NAME_MISMATCH;
-            goto cleanup;
-        }
-        retval = verify_client_eku(context, plgctx, reqctx, &valid_eku);
-        if (retval)
-            goto cleanup;
-
-        if (!valid_eku) {
-            pkiDebug("%s: did not find an acceptable EKU in user "
-                     "certificate\n", __FUNCTION__);
-            retval = KRB5KDC_ERR_INCONSISTENT_KEY_PURPOSE;
-            goto cleanup;
-        }
     } else { /* !is_signed */
         if (!krb5_principal_compare(context, request->client,
                                     krb5_anonymous_principal())) {
@@ -1368,6 +1383,10 @@ pkinit_server_plugin_init(krb5_context context,
         goto errout;
     }
 
+    retval = load_certauth_plugins(context);
+    if (retval)
+        goto errout;
+
     *moddata_out = (krb5_kdcpreauth_moddata)realm_contexts;
     retval = 0;
     pkiDebug("%s: returning context at %p\n", __FUNCTION__, realm_contexts);
@@ -1487,5 +1506,243 @@ kdcpreauth_pkinit_initvt(krb5_context context, int maj_ver, int min_ver,
     vt->edata = pkinit_server_get_edata;
     vt->verify = pkinit_server_verify_padata;
     vt->return_padata = pkinit_server_return_padata;
+    return 0;
+}
+
+/*
+ * Run the received, verified certificate through the certauth plugin interface,
+ * to verify that client can use the certificate based on the extension policy
+ * defined by  modules.
+ */
+static krb5_error_code
+server_authorize_cert(krb5_context context, pkinit_kdc_context plgctx,
+                      pkinit_kdc_req_context reqctx,
+                      krb5_kdcpreauth_callbacks cb, krb5_kdcpreauth_rock rock,
+                      krb5_principal client)
+{
+    krb5_error_code ret;
+    certauth_handle *hd;
+    struct certauth_opts opts;
+    krb5_boolean ok;
+    krb5_data cert;
+    size_t i;
+
+    /* Re-encode the received certificate into DER, which is extra work, but
+     * avoids creating a crypto dependency on the interface. */
+    ret = crypto_encode_der_cert(context, reqctx->cryptoctx, &cert);
+    if (ret)
+        goto cleanup;
+
+    /* Set options for the builtin module */
+    opts.allow_upn = plgctx->opts->allow_upn;
+    opts.require_eku = plgctx->opts->require_eku;
+    opts.accept_secondary_eku = plgctx->opts->accept_secondary_eku;
+    opts.cb = cb;
+    opts.rock = rock;
+
+    /*
+     * For each certauth module,
+     * - Initialize a per-request moddata as needed.
+     * - Pass the encoded certificate, moddata, and client principal to the
+     *   authorize function.
+     * - If any module's authorize function says no, that's it.
+     * - Run req_fini to clean up the moddata.
+     */
+    ok = FALSE;
+    for (i = 0; i < n_certauth_modules; i++) {
+        hd = &certauth_modules[i];
+        if (hd->vt.req_init != NULL) {
+            ret = hd->vt.req_init(context, (void *)&opts, &hd->moddata);
+            if (ret)
+                goto cleanup;
+        }
+        ret = hd->vt.authorize(context, hd->moddata, cert, client, NULL, NULL,
+                               &ok);
+
+        if (hd->vt.req_fini != NULL)
+            hd->vt.req_fini(context, &hd->moddata);
+
+        if (ret)
+            goto cleanup;
+
+        if (!ok) {
+            /* This hides the EKU error, do something about that.. */
+            ret = KRB5KDC_ERR_CLIENT_NAME_MISMATCH;
+            goto cleanup;
+        }
+    }
+
+cleanup:
+    crypto_free_data(context, cert);
+    return ret;
+}
+
+krb5_error_code
+certauth_pkinitsrv_initvt(krb5_context context, int maj_ver, int min_ver,
+                          krb5_plugin_vtable vtable);
+
+static krb5_error_code
+load_certauth_plugins(krb5_context context)
+{
+    krb5_error_code ret;
+    krb5_plugin_initvt_fn *modules = NULL, *mod;
+    certauth_handle *list, *h;
+    size_t count;
+
+    /* Register the builtin module. */
+    ret = k5_plugin_register(context, PLUGIN_INTERFACE_CERTAUTH, "pkinitsrv",
+                             certauth_pkinitsrv_initvt);
+    if (ret)
+        goto cleanup;
+
+    ret = k5_plugin_load_all(context, PLUGIN_INTERFACE_CERTAUTH, &modules);
+    if (ret)
+        goto cleanup;
+
+    /* Allocate vtables and initialize modules. */
+    for (count = 0; modules[count]; count++);
+    list = calloc(count + 1, sizeof(*list));
+    if (list == NULL) {
+        ret = ENOMEM;
+        goto cleanup;
+    }
+
+    /* Initialize module vtables and collect the module count. */
+    count = 0;
+    for (mod = modules; *mod != NULL; mod++) {
+        h = &list[count];
+        memset(h, 0, sizeof(*h));
+        ret = (*mod)(context, 1, 1, (krb5_plugin_vtable)&h->vt);
+        if (ret)
+            continue;
+        count++;
+    }
+    certauth_modules = list;
+    n_certauth_modules = count;
+
+cleanup:
+    k5_plugin_free_modules(context, modules);
+    return 0;
+}
+
+/* Begin the built-in certauth module functions. */
+
+static krb5_error_code
+certauth_req_init(krb5_context context, void *opts,
+                  krb5_certauth_moddata *moddata_out)
+{
+    krb5_error_code ret;
+    krb5_certauth_moddata mod = NULL;
+    pkinit_req_crypto_context reqctx = NULL;
+    pkinit_plg_crypto_context plgctx = NULL;
+
+    if (moddata_out == NULL || opts == NULL)
+        return EINVAL;
+
+    *moddata_out = NULL;
+
+    mod = calloc(1, sizeof(*mod));
+    if (mod == NULL)
+        return ENOMEM;
+
+    /* Set up req and plg crypto contexts for the internal extension
+     * verification functions. */
+    ret = pkinit_init_req_crypto(&reqctx);
+    if (ret)
+        goto cleanup;
+
+    ret = pkinit_init_plg_crypto(&plgctx);
+    if (ret)
+        goto cleanup;
+
+    mod->reqctx = reqctx;
+    mod->plgctx = plgctx;
+    mod->opts = *(struct certauth_opts *)opts;
+    *moddata_out = mod;
+
+    mod = NULL;
+    reqctx = NULL;
+    plgctx = NULL;
+
+cleanup:
+    pkinit_fini_req_crypto(reqctx);
+    free(mod);
+    return ret;
+}
+
+static void
+certauth_req_fini(krb5_context context, krb5_certauth_moddata *moddata)
+{
+    if (moddata != NULL && *moddata != NULL) {
+        pkinit_fini_req_crypto((*moddata)->reqctx);
+        pkinit_fini_plg_crypto((*moddata)->plgctx);
+        free(*moddata);
+        *moddata = NULL;
+    }
+}
+
+static krb5_error_code
+certauth_authorize(krb5_context context, krb5_certauth_moddata moddata,
+                   krb5_data cert, krb5_principal princ, void *db_entry,
+                   char **authinds_out, krb5_boolean *status)
+{
+    krb5_error_code ret;
+    pkinit_plg_crypto_context plgctx = moddata->plgctx;
+    pkinit_req_crypto_context reqctx = moddata->reqctx;
+    struct certauth_opts *opts = &moddata->opts;
+    int valid_san, valid_eku;
+
+    if (authinds_out != NULL)
+        *authinds_out = NULL;
+
+    *status = FALSE;
+
+    /* Decode cert into reqctx. */
+    ret = crypto_decode_der_cert(context, cert, reqctx);
+    if (ret)
+        goto err;
+
+    /* Verify the client SAN. */
+    ret = verify_client_san(context, plgctx, reqctx, opts->cb, opts->rock,
+                            princ, opts->allow_upn, &valid_san);
+    if (ret)
+        goto err;
+
+    if (!valid_san) {
+        pkiDebug("%s: did not find an acceptable SAN in user "
+                 "certificate\n", __FUNCTION__);
+        goto err;
+    }
+
+    /* Verify the client EKU. */
+    ret = verify_client_eku(context, plgctx, reqctx, opts->require_eku,
+                            opts->accept_secondary_eku, &valid_eku);
+    if (ret)
+        goto err;
+
+    if (!valid_eku) {
+        pkiDebug("%s: did not find an acceptable EKU in user "
+                 "certificate\n", __FUNCTION__);
+        goto err;
+    }
+
+    *status = TRUE;
+err:
+    return ret;
+}
+
+krb5_error_code
+certauth_pkinitsrv_initvt(krb5_context context, int maj_ver, int min_ver,
+                          krb5_plugin_vtable vtable)
+{
+    krb5_certauth_vtable vt;
+
+    if (maj_ver != 1)
+        return KRB5_PLUGIN_VER_NOTSUPP;
+    vt = (krb5_certauth_vtable)vtable;
+    vt->name = "pkinitsrv";
+    vt->authorize = certauth_authorize;
+    vt->req_init = certauth_req_init;
+    vt->req_fini = certauth_req_fini;
     return 0;
 }

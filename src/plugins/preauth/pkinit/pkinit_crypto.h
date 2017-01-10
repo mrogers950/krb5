@@ -664,4 +664,13 @@ extern const size_t  krb5_pkinit_sha512_oid_len;
  */
 extern krb5_data const * const supported_kdf_alg_ids[];
 
+extern void
+crypto_free_data(krb5_context context, krb5_data data);
+extern krb5_error_code
+crypto_decode_der_cert(krb5_context context, krb5_data der_cert,
+                       pkinit_req_crypto_context reqctx);
+extern krb5_error_code
+crypto_encode_der_cert(krb5_context context, pkinit_req_crypto_context reqctx,
+                       krb5_data *der_cert);
+
 #endif	/* _PKINIT_CRYPTO_H */

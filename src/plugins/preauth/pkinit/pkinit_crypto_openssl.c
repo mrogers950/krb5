@@ -29,6 +29,7 @@
  * SUCH DAMAGES.
  */
 
+#include <k5-int.h>
 #include "pkinit_crypto_openssl.h"
 #include "k5-buf.h"
 #include <dlfcn.h>
@@ -2271,6 +2272,93 @@ crypto_retrieve_signer_identity(krb5_context context,
     *identity = id_cryptoctx->identity;
     if (*identity == NULL)
         return ENOENT;
+    return 0;
+}
+
+/* Decode DER data into the OpenSSL structure. */
+static krb5_error_code
+crypto_decode_X509(krb5_context context, krb5_data der_cert, X509 **cert_out)
+{
+    X509 *cert;
+    const unsigned char *p;
+    int len;
+
+    *cert_out = NULL;
+
+    if (der_cert.data == NULL) {
+        pkiDebug("%s: No certificate!\n", __FUNCTION__);
+        return EINVAL;
+    }
+
+    /* Set up buf and len from der cert. */
+    p = (unsigned char *)der_cert.data;
+    len = der_cert.length;
+
+    /* Decode into X509. */
+    cert = d2i_X509(NULL, &p, len);
+    if (cert == NULL) {
+        pkiDebug("%s: Decoding error!\n", __FUNCTION__);
+        return EINVAL;
+    }
+
+    *cert_out = cert;
+    return 0;
+}
+
+/*
+ * Decode and store der_cert into reqctx.  This is used during extension
+ * verification, not signature verification where the received cert is decoded
+ * using CMS processing instead.
+ */
+krb5_error_code
+crypto_decode_der_cert(krb5_context context, krb5_data der_cert,
+                       pkinit_req_crypto_context reqctx)
+{
+    krb5_error_code ret;
+    X509 *c;
+
+    reqctx->received_cert = NULL;
+    ret = crypto_decode_X509(context, der_cert, &c);
+    if (ret)
+        return ret;
+
+    reqctx->received_cert = c;
+    return ret;
+}
+
+/* Free data that was previously allocated by OpenSSL. */
+void
+crypto_free_data(krb5_context context, krb5_data data)
+{
+    OPENSSL_free(data.data);
+}
+
+/* Return the reqctx certificate as DER encoded data (allocated by OpenSSL) in
+ * der_cert. */
+krb5_error_code
+crypto_encode_der_cert(krb5_context context, pkinit_req_crypto_context reqctx,
+                       krb5_data *der_cert)
+{
+    int len;
+    unsigned char *p;
+
+    der_cert->data = NULL;
+    der_cert->length = 0;
+
+    if (reqctx->received_cert == NULL) {
+        pkiDebug("%s: No certificate!\n", __FUNCTION__);
+        return EINVAL;
+    }
+
+    /* Encode to DER, allocated by passing a NULL p. */
+    p = NULL;
+    len = i2d_X509(reqctx->received_cert, &p);
+    if (p == NULL || len <= 0) {
+        pkiDebug("%s: encoding error!\n", __FUNCTION__);
+        return EINVAL;
+    }
+
+    *der_cert = make_data(p, len);
     return 0;
 }
 
