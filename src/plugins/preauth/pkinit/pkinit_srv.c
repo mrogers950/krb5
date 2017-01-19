@@ -1526,6 +1526,7 @@ server_authorize_cert(krb5_context context, pkinit_kdc_context plgctx,
     krb5_boolean ok;
     krb5_data cert;
     size_t i;
+    void *db_ent = NULL;
 
     /* Re-encode the received certificate into DER, which is extra work, but
      * avoids creating a crypto dependency on the interface. */
@@ -1539,6 +1540,8 @@ server_authorize_cert(krb5_context context, pkinit_kdc_context plgctx,
     opts.accept_secondary_eku = plgctx->opts->accept_secondary_eku;
     opts.cb = cb;
     opts.rock = rock;
+
+    db_ent = cb->client_entry(context, rock);
 
     /*
      * For each certauth module,
@@ -1556,7 +1559,7 @@ server_authorize_cert(krb5_context context, pkinit_kdc_context plgctx,
             if (ret)
                 goto cleanup;
         }
-        ret = hd->vt.authorize(context, hd->moddata, cert, client, NULL, NULL,
+        ret = hd->vt.authorize(context, hd->moddata, cert, client, db_ent, NULL,
                                &ok);
 
         if (hd->vt.req_fini != NULL)
