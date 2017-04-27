@@ -82,8 +82,9 @@ decrypt_2ndtkt(kdc_realm_t *, krb5_kdc_req *, krb5_flags, krb5_db_entry **,
                const char **);
 
 static krb5_error_code
-gen_session_key(kdc_realm_t *, krb5_kdc_req *, krb5_db_entry *,
-                krb5_keyblock *, const char **);
+gen_session_key(kdc_realm_t *kdc_active_realm, krb5_kdc_req *req,
+                krb5_db_entry *server, krb5_data **auth_indicators,
+                krb5_keyblock *skey, const char **status);
 
 static krb5_int32
 find_referral_tgs(kdc_realm_t *, krb5_kdc_req *, krb5_principal *);
@@ -363,11 +364,6 @@ process_tgs_req(struct server_handle *handle, krb5_data *pkt,
 
     au_state->stage = ISSUE_TKT;
 
-    errcode = gen_session_key(kdc_active_realm, request, server, &session_key,
-                              &status);
-    if (errcode)
-        goto cleanup;
-
     /*
      * subject_tkt will refer to the evidence ticket (for constrained
      * delegation) or the TGT. The distinction from header_enc_tkt is
@@ -397,6 +393,12 @@ process_tgs_req(struct server_handle *handle, krb5_data *pkt,
         status = "HIGHER_AUTHENTICATION_REQUIRED";
         goto cleanup;
     }
+
+    errcode = gen_session_key(kdc_active_realm, request, server,
+                              auth_indicators, &session_key,
+                              &status);
+    if (errcode)
+        goto cleanup;
 
     if (is_referral)
         ticket_reply.server = server->princ;
@@ -510,9 +512,14 @@ process_tgs_req(struct server_handle *handle, krb5_data *pkt,
         /* not a renew request */
         enc_tkt_reply.times.starttime = kdc_time;
 
-        kdc_get_ticket_endtime(kdc_active_realm, enc_tkt_reply.times.starttime,
-                               header_enc_tkt->times.endtime, request->till,
-                               client, server, &enc_tkt_reply.times.endtime);
+        errcode = kdc_policy_get_ticket_endtime(kdc_active_realm,
+                                                enc_tkt_reply.times.starttime,
+                                                header_enc_tkt->times.endtime,
+                                                request->till, client, server,
+                                                auth_indicators,
+                                                &enc_tkt_reply.times.endtime);
+        if (errcode)
+            goto cleanup;
     }
 
     kdc_get_ticket_renewtime(kdc_active_realm, request, header_enc_tkt, client,
@@ -1033,8 +1040,8 @@ get_2ndtkt_enctype(kdc_realm_t *kdc_active_realm, krb5_kdc_req *req,
 
 static krb5_error_code
 gen_session_key(kdc_realm_t *kdc_active_realm, krb5_kdc_req *req,
-                krb5_db_entry *server, krb5_keyblock *skey,
-                const char **status)
+                krb5_db_entry *server, krb5_data **auth_indicators,
+                krb5_keyblock *skey, const char **status)
 {
     krb5_error_code retval;
     krb5_enctype useenctype = 0;
@@ -1055,10 +1062,13 @@ gen_session_key(kdc_realm_t *kdc_active_realm, krb5_kdc_req *req,
             goto cleanup;
     }
     if (useenctype == 0) {
-        useenctype = select_session_keytype(kdc_active_realm, server,
-                                            req->nktypes,
-                                            req->ktype);
+        retval = kdc_policy_get_session_keytype(kdc_active_realm, server,
+                                             req->nktypes, req->ktype,
+                                             auth_indicators, &useenctype);
+        if (retval)
+            goto cleanup;
     }
+
     if (useenctype == 0) {
         /* unsupported ktype */
         *status = "BAD_ENCRYPTION_TYPE";

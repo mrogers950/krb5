@@ -691,9 +691,10 @@ process_as_req(krb5_kdc_req *request, krb5_data *req_pkt,
     /*
      * Select the keytype for the ticket session key.
      */
-    if ((useenctype = select_session_keytype(kdc_active_realm, state->server,
-                                             state->request->nktypes,
-                                             state->request->ktype)) == 0) {
+    if ((useenctype = select_session_keytype(kdc_context, state->server,
+                           state->request->nktypes,
+                           state->request->ktype,
+                           kdc_active_realm->realm_assume_des_crc_sess)) == 0) {
         /* unsupported ktype */
         state->status = "BAD_ENCRYPTION_TYPE";
         errcode = KRB5KDC_ERR_ETYPE_NOSUPP;
@@ -750,9 +751,9 @@ process_as_req(krb5_kdc_req *request, krb5_data *req_pkt,
     } else
         state->enc_tkt_reply.times.starttime = state->kdc_time;
 
-    kdc_get_ticket_endtime(kdc_active_realm,
-                           state->enc_tkt_reply.times.starttime,
-                           kdc_infinity, state->request->till, state->client,
+    kdc_get_ticket_endtime(state->enc_tkt_reply.times.starttime,
+                           kdc_infinity, state->request->till,
+                           kdc_active_realm->realm_maxlife, state->client,
                            state->server, &state->enc_tkt_reply.times.endtime);
 
     kdc_get_ticket_renewtime(kdc_active_realm, state->request, NULL,

@@ -956,8 +956,8 @@ fetch_asn1_field(unsigned char *astream, unsigned int level,
 
 /* Return true if we believe server can support enctype as a session key. */
 static krb5_boolean
-dbentry_supports_enctype(kdc_realm_t *kdc_active_realm, krb5_db_entry *server,
-                         krb5_enctype enctype)
+dbentry_supports_enctype(krb5_context context, krb5_db_entry *server,
+                         krb5_enctype enctype, krb5_boolean assume_des_crc)
 {
     krb5_error_code     retval;
     krb5_key_data       *datap;
@@ -967,12 +967,12 @@ dbentry_supports_enctype(kdc_realm_t *kdc_active_realm, krb5_db_entry *server,
     krb5_boolean        in_list;
 
     /* Look up the supported session key enctypes list in the KDB. */
-    retval = krb5_dbe_get_string(kdc_context, server,
+    retval = krb5_dbe_get_string(context, server,
                                  KRB5_KDB_SK_SESSION_ENCTYPES,
                                  &etypes_str);
     if (retval == 0 && etypes_str != NULL && *etypes_str != '\0') {
         /* Pass a fake profile key for tracing of unrecognized tokens. */
-        retval = krb5int_parse_enctype_list(kdc_context, "KDB-session_etypes",
+        retval = krb5int_parse_enctype_list(context, "KDB-session_etypes",
                                             etypes_str, default_enctypes,
                                             &etypes);
         if (retval == 0 && etypes != NULL && etypes[0]) {
@@ -988,8 +988,7 @@ dbentry_supports_enctype(kdc_realm_t *kdc_active_realm, krb5_db_entry *server,
 
     /* If configured to, assume every server without a session_enctypes
      * attribute supports DES_CBC_CRC. */
-    if (kdc_active_realm->realm_assume_des_crc_sess &&
-        enctype == ENCTYPE_DES_CBC_CRC)
+    if (assume_des_crc && enctype == ENCTYPE_DES_CBC_CRC)
         return TRUE;
 
     /* Due to an ancient interop problem, assume nothing supports des-cbc-md5
@@ -998,7 +997,7 @@ dbentry_supports_enctype(kdc_realm_t *kdc_active_realm, krb5_db_entry *server,
         return FALSE;
 
     /* Assume the server supports any enctype it has a long-term key for. */
-    return !krb5_dbe_find_enctype(kdc_context, server, enctype, -1, 0, &datap);
+    return !krb5_dbe_find_enctype(context, server, enctype, -1, 0, &datap);
 }
 
 /*
@@ -1007,8 +1006,9 @@ dbentry_supports_enctype(kdc_realm_t *kdc_active_realm, krb5_db_entry *server,
  * requested, and what the KDC and the application server can support.
  */
 krb5_enctype
-select_session_keytype(kdc_realm_t *kdc_active_realm, krb5_db_entry *server,
-                       int nktypes, krb5_enctype *ktype)
+select_session_keytype(krb5_context context, krb5_db_entry *server,
+                       int nktypes, krb5_enctype *ktype,
+                       krb5_boolean assume_des_crc)
 {
     int         i;
 
@@ -1016,10 +1016,10 @@ select_session_keytype(kdc_realm_t *kdc_active_realm, krb5_db_entry *server,
         if (!krb5_c_valid_enctype(ktype[i]))
             continue;
 
-        if (!krb5_is_permitted_enctype(kdc_context, ktype[i]))
+        if (!krb5_is_permitted_enctype(context, ktype[i]))
             continue;
 
-        if (dbentry_supports_enctype(kdc_active_realm, server, ktype[i]))
+        if (dbentry_supports_enctype(context, server, ktype[i], assume_des_crc))
             return ktype[i];
     }
 
@@ -1752,10 +1752,10 @@ add_pa_data_element(krb5_context context,
 }
 
 void
-kdc_get_ticket_endtime(kdc_realm_t *kdc_active_realm,
-                       krb5_timestamp starttime,
+kdc_get_ticket_endtime(krb5_timestamp starttime,
                        krb5_timestamp endtime,
                        krb5_timestamp till,
+                       krb5_deltat realm_maxlife,
                        krb5_db_entry *client,
                        krb5_db_entry *server,
                        krb5_timestamp *out_endtime)
@@ -1773,8 +1773,8 @@ kdc_get_ticket_endtime(kdc_realm_t *kdc_active_realm,
         life = min(life, client->max_life);
     if (server->max_life != 0)
         life = min(life, server->max_life);
-    if (kdc_active_realm->realm_maxlife != 0)
-        life = min(life, kdc_active_realm->realm_maxlife);
+    if (realm_maxlife != 0)
+        life = min(life, realm_maxlife);
 
     *out_endtime = starttime + life;
 }

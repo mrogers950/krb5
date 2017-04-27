@@ -103,10 +103,11 @@ int
 fetch_asn1_field (unsigned char *, unsigned int, unsigned int, krb5_data *);
 
 krb5_enctype
-select_session_keytype (kdc_realm_t *kdc_active_realm,
+select_session_keytype (krb5_context context,
                         krb5_db_entry *server,
                         int nktypes,
-                        krb5_enctype *ktypes);
+                        krb5_enctype *ktypes,
+                        krb5_boolean assume_des_crc);
 
 void limit_string (char *name);
 
@@ -332,10 +333,10 @@ validate_transit_path(krb5_context context,
                       krb5_db_entry *server,
                       krb5_db_entry *krbtgt);
 void
-kdc_get_ticket_endtime(kdc_realm_t *kdc_active_realm,
-                       krb5_timestamp now,
+kdc_get_ticket_endtime( krb5_timestamp now,
                        krb5_timestamp endtime,
                        krb5_timestamp till,
+                       krb5_deltat realm_maxlife,
                        krb5_db_entry *client,
                        krb5_db_entry *server,
                        krb5_timestamp *out_endtime);
@@ -537,5 +538,28 @@ int check_anon(kdc_realm_t *kdc_active_realm,
 int errcode_to_protocol(krb5_error_code code);
 
 char *data2string(krb5_data *d);
+
+krb5_error_code
+load_kdcpolicy_plugins(struct server_handle *shandle, krb5_context context);
+
+/* kdc_policy.c */
+krb5_error_code
+krb5_kdcpolicy_initvt(krb5_context context, int maj_ver,
+                      int min_ver, krb5_plugin_vtable vtable);
+krb5_error_code
+kdc_policy_get_session_keytype(kdc_realm_t *kdc_active_realm,
+                               krb5_db_entry *server, int nktypes,
+                               krb5_enctype *ktype, krb5_data **auth_indicators,
+                               krb5_enctype *enc_out);
+
+krb5_error_code
+kdc_policy_get_ticket_endtime(kdc_realm_t *kdc_active_realm,
+                       krb5_timestamp starttime,
+                       krb5_timestamp endtime,
+                       krb5_timestamp till,
+                       krb5_db_entry *client,
+                       krb5_db_entry *server,
+                       krb5_data **auth_indicators,
+                       krb5_timestamp *out_endtime);
 
 #endif /* __KRB5_KDC_UTIL__ */

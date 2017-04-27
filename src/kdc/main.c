@@ -30,6 +30,7 @@
 #include "adm_proto.h"
 #include "kdc_util.h"
 #include "kdc_audit.h"
+#include "kdc_policy.h"
 #include "extern.h"
 #include "kdc5_err.h"
 #include "kdb_kt.h"
@@ -986,6 +987,12 @@ int main(int argc, char **argv)
 
     load_preauth_plugins(&shandle, kcontext, ctx);
     load_authdata_plugins(kcontext);
+    retval = load_kdcpolicy_plugins(&shandle, kcontext);
+    if (retval) {
+        kdc_err(kcontext, retval, _("while loading KDC policy plugin"));
+        finish_realms();
+        return 1;
+    }
 
     retval = setup_sam();
     if (retval) {

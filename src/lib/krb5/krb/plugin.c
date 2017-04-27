@@ -58,7 +58,8 @@ const char *interface_names[] = {
     "audit",
     "tls",
     "kdcauthdata",
-    "certauth"
+    "certauth",
+    "kdcpolicy"
 };
 
 /* Return the context's interface structure for id, or NULL if invalid. */

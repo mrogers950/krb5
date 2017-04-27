@@ -25,6 +25,7 @@ SRCS= \
 	$(srcdir)/replay.c \
 	$(srcdir)/kdc_authdata.c \
 	$(srcdir)/kdc_audit.c \
+	$(srcdir)/kdc_policy.c \
 	$(srcdir)/kdc_transit.c \
 	$(srcdir)/tgs_policy.c \
 	$(srcdir)/kdc_log.c \
@@ -48,6 +49,7 @@ OBJS= \
 	replay.o \
 	kdc_authdata.o \
 	kdc_audit.o \
+	kdc_policy.o \
 	kdc_transit.o \
 	tgs_policy.o \
 	kdc_log.o
