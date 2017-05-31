@@ -25,12 +25,41 @@
 
 #ifndef __KRB5_KDC_POLICY__
 #define __KRB5_KDC_POLICY__
+#include "k5-int.h"
+#include "kdc_util.h"
+#include "extern.h"
 
-extern int against_postdate_policy (krb5_timestamp);
+//extern int against_postdate_policy (krb5_timestamp);
 
-extern int against_flag_policy_as (const krb5_kdc_req *);
+//extern int against_flag_policy_as (const krb5_kdc_req *);
 
-extern int against_flag_policy_tgs (const krb5_kdc_req *,
-                                    const krb5_ticket *);
+//extern int against_flag_policy_tgs (const krb5_kdc_req *,
+//                                    const krb5_ticket *);
+
+krb5_error_code
+load_kdcpolicy_plugin(struct server_handle *shandle,
+                      krb5_context context);
+
+krb5_error_code
+against_local_policy_as(krb5_context context,
+                        register krb5_kdc_req *request,
+                        krb5_db_entry *client,
+                        krb5_db_entry *server,
+                        krb5_data **auth_indicators,
+                        krb5_timestamp kdc_time,
+                        const char **status,
+                        krb5_timestamp *tkt_end_out,
+                        krb5_enctype *skey_enc_out);
+
+krb5_error_code
+against_local_policy_tgs(krb5_context context,
+                         register krb5_kdc_req *request,
+                         krb5_db_entry *server,
+                         krb5_ticket *ticket,
+                         krb5_data **auth_indicators,
+                         krb5_timestamp kdc_time,
+                         const char **status,
+                         krb5_timestamp *tkt_end_out,
+                         krb5_enctype *skey_enc_out);
 
 #endif /* __KRB5_KDC_POLICY__ */

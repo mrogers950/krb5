@@ -82,8 +82,9 @@ decrypt_2ndtkt(kdc_realm_t *, krb5_kdc_req *, krb5_flags, krb5_db_entry **,
                const char **);
 
 static krb5_error_code
-gen_session_key(kdc_realm_t *, krb5_kdc_req *, krb5_db_entry *,
-                krb5_keyblock *, const char **);
+gen_session_key(kdc_realm_t *kdc_active_realm, krb5_kdc_req *req,
+                krb5_db_entry *server, krb5_enctype keytype,
+                krb5_keyblock *skey, const char **status);
 
 static krb5_int32
 find_referral_tgs(kdc_realm_t *, krb5_kdc_req *, krb5_principal *);
@@ -139,6 +140,8 @@ process_tgs_req(struct server_handle *handle, krb5_data *pkt,
     kdc_realm_t *kdc_active_realm = NULL;
     krb5_audit_state *au_state = NULL;
     krb5_data **auth_indicators = NULL;
+    krb5_enctype local_skey_enc = ENCTYPE_NULL;
+    krb5_timestamp local_tkt_end = 0;
 
     memset(&reply, 0, sizeof(reply));
     memset(&reply_encpart, 0, sizeof(reply_encpart));
@@ -363,11 +366,6 @@ process_tgs_req(struct server_handle *handle, krb5_data *pkt,
 
     au_state->stage = ISSUE_TKT;
 
-    errcode = gen_session_key(kdc_active_realm, request, server, &session_key,
-                              &status);
-    if (errcode)
-        goto cleanup;
-
     /*
      * subject_tkt will refer to the evidence ticket (for constrained
      * delegation) or the TGT. The distinction from header_enc_tkt is
@@ -397,6 +395,25 @@ process_tgs_req(struct server_handle *handle, krb5_data *pkt,
         status = "HIGHER_AUTHENTICATION_REQUIRED";
         goto cleanup;
     }
+
+    /* Check local policy. */
+    errcode = against_local_policy_tgs(kdc_context,
+                                       request,
+                                       server,
+                                       header_ticket,
+                                       auth_indicators,
+                                       kdc_time,
+                                       &status,
+                                       &local_tkt_end,
+                                       &local_skey_enc);
+    if (errcode)
+        return errcode;
+
+    errcode = gen_session_key(kdc_active_realm, request, server,
+                              local_skey_enc, &session_key,
+                              &status);
+    if (errcode)
+        goto cleanup;
 
     if (is_referral)
         ticket_reply.server = server->princ;
@@ -514,6 +531,10 @@ process_tgs_req(struct server_handle *handle, krb5_data *pkt,
                                header_enc_tkt->times.endtime, request->till,
                                client, server, &enc_tkt_reply.times.endtime);
     }
+
+    if (local_tkt_end != 0)
+        enc_tkt_reply.times.endtime = min(enc_tkt_reply.times.endtime,
+                                          local_tkt_end);
 
     kdc_get_ticket_renewtime(kdc_active_realm, request, header_enc_tkt, client,
                              server, &enc_tkt_reply);
@@ -1034,11 +1055,13 @@ get_2ndtkt_enctype(kdc_realm_t *kdc_active_realm, krb5_kdc_req *req,
 
 static krb5_error_code
 gen_session_key(kdc_realm_t *kdc_active_realm, krb5_kdc_req *req,
-                krb5_db_entry *server, krb5_keyblock *skey,
-                const char **status)
+                krb5_db_entry *server, krb5_enctype keytype,
+                krb5_keyblock *skey, const char **status)
 {
     krb5_error_code retval;
     krb5_enctype useenctype = 0;
+    krb5_enctype *key_types = NULL;
+    size_t num_key_types = 0;
 
     /*
      * Some special care needs to be taken in the user-to-user
@@ -1056,9 +1079,16 @@ gen_session_key(kdc_realm_t *kdc_active_realm, krb5_kdc_req *req,
             goto cleanup;
     }
     if (useenctype == 0) {
+        if (keytype == ENCTYPE_NULL) {
+            key_types = req->ktype;
+            num_key_types = req->nktypes;
+        } else {
+            key_types = &keytype;
+            num_key_types = 1;
+        }
         useenctype = select_session_keytype(kdc_active_realm, server,
-                                            req->nktypes,
-                                            req->ktype);
+                                            num_key_types,
+                                            key_types);
     }
     if (useenctype == 0) {
         /* unsupported ktype */

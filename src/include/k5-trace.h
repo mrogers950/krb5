@@ -485,4 +485,9 @@ void krb5int_trace(krb5_context context, const char *fmt, ...);
 #define TRACE_GET_CRED_VIA_TKT_EXT_RETURN(c, ret) \
     TRACE(c, "Got cred; {kerr}", ret)
 
+#define TRACE_KDCPOLICY_VTINIT_FAIL(c, ret)                              \
+    TRACE(c, "KDC policy module failed to init vtable: {kerr}", ret)
+#define TRACE_KDCPOLICY_INIT_FAIL(c, name, ret)                          \
+    TRACE(c, "KDC policy module {str} failed to init: {kerr}", name, ret)
+
 #endif /* K5_TRACE_H */

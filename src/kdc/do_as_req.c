@@ -176,11 +176,14 @@ finish_process_as_req(struct as_req_state *state, krb5_error_code errcode)
     krb5_keyblock *as_encrypting_key = NULL;
     krb5_data *response = NULL;
     const char *emsg = 0;
+    const char *status = NULL;
     int did_log = 0;
     loop_respond_fn oldrespond;
     void *oldarg;
     kdc_realm_t *kdc_active_realm = state->active_realm;
     krb5_audit_state *au_state = state->au_state;
+    krb5_enctype local_skey_enc;
+    krb5_timestamp local_tkt_end, local_endtime;
 
     assert(state);
     oldrespond = state->respond;
@@ -206,6 +209,48 @@ finish_process_as_req(struct as_req_state *state, krb5_error_code errcode)
     }
 
     state->ticket_reply.enc_part2 = &state->enc_tkt_reply;
+
+    /* Check against local policy. */
+    errcode = against_local_policy_as(kdc_context,
+                                      state->request,
+                                      state->client,
+                                      state->server,
+                                      state->auth_indicators,
+                                      state->kdc_time,
+                                      &status,
+                                      &local_tkt_end,
+                                      &local_skey_enc);
+    if (errcode) {
+        state->status = status;
+        goto egress;
+    }
+
+    /* Replace the previously generated session key with the local policy
+     * output, if it's different. */
+    if (local_skey_enc != ENCTYPE_NULL &&
+        local_skey_enc != state->session_key.enctype) {
+        /* Free the old session key. */
+        krb5_free_keyblock_contents(kdc_context, &state->session_key);
+        errcode = krb5_c_make_random_key(kdc_context, local_skey_enc,
+                                         &state->session_key);
+        if (errcode) {
+            state->status = "MAKE_RANDOM_KEY";
+            goto egress;
+        }
+        state->enc_tkt_reply.session = &state->session_key;
+    }
+
+    /* Replace the endtime with the local policy output. */
+    if (local_tkt_end != 0) {
+        kdc_get_ticket_endtime(state->active_realm,
+                               state->enc_tkt_reply.times.starttime,
+                               state->enc_tkt_reply.times.endtime,
+                               local_tkt_end,
+                               state->client,
+                               state->server,
+                               &local_endtime);
+        state->enc_tkt_reply.times.endtime = local_endtime;
+    }
 
     /*
      * Find the server key
